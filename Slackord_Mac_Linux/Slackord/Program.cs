@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using octo = Octokit;
 using Microsoft.Extensions.DependencyInjection;
 using Discord.Net;
+using System.Globalization;
 using Octokit;
 
 namespace Slackord
@@ -19,6 +20,7 @@ namespace Slackord
         private JArray parsed;
         private readonly List<string> Responses = new();
         private readonly List<string> ListOfFilesToParse = new();
+        private CultureInfo locale = new CultureInfo("nb-NO");
 
         static void Main()
         {
@@ -198,7 +200,7 @@ namespace Slackord
                             {
                                 var rawTimeDate = pair["ts"];
                                 var oldDateTime = (double)rawTimeDate;
-                                var convertDateTime = ConvertFromUnixTimestampToHumanReadableTime(oldDateTime).ToString("g");
+                                var convertDateTime = ConvertFromUnixTimestampToHumanReadableTime(oldDateTime).ToString(locale);
                                 var newDateTime = convertDateTime.ToString();
                                 var slackUserName = pair["user_profile"]["display_name"]?.ToString();
                                 var slackRealName = pair["user_profile"]["real_name"];
