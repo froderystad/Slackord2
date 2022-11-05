@@ -2,10 +2,10 @@
 using Discord.Interactions;
 using Discord.WebSocket;
 using Newtonsoft.Json.Linq;
-using octo = Octokit;
 using Microsoft.Extensions.DependencyInjection;
 using Discord.Net;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Octokit;
 
 namespace Slackord
@@ -113,6 +113,12 @@ namespace Slackord
             }
 
         }
+
+        private string FixMessageMarkup(string slackMessage)
+        {
+            slackMessage = Regex.Replace(slackMessage, @"\<(.*)\|(.*)\>", "$2 ($1)"); // <url|text> -> text (url)
+            return slackMessage.Replace("&gt;", ">"); // quote
+        }
         
         [STAThread]
         private async Task ParseJsonFiles()
@@ -155,7 +161,7 @@ namespace Slackord
                             {
                                 try
                                 {
-                                    debugResponse = pair["text"] + "\n" + pair["files"][0]["thumb_1024"].ToString() + "\n";
+                                    debugResponse = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["thumb_1024"].ToString() + "\n";
                                     Responses.Add(debugResponse);
                                     Console.WriteLine(debugResponse + "\n");
                                 }
@@ -163,7 +169,7 @@ namespace Slackord
                                 {
                                     try
                                     {
-                                        debugResponse = pair["text"] + "\n" + pair["files"][0]["url_private"].ToString() + "\n";
+                                        debugResponse = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["url_private"].ToString() + "\n";
                                         Responses.Add(debugResponse);
                                         Console.WriteLine(debugResponse + "\n");
                                     }
@@ -179,14 +185,14 @@ namespace Slackord
                             {
                                 try
                                 {
-                                    debugResponse = pair["bot_profile"]["name"].ToString() + ": " + pair["text"] + "\n";
+                                    debugResponse = pair["bot_profile"]["name"].ToString() + ": " + FixMessageMarkup(pair["text"].ToString()) + "\n";
                                     Responses.Add(debugResponse);
                                 }
                                 catch (NullReferenceException)
                                 {
                                     try
                                     {
-                                        debugResponse = pair["bot_id"].ToString() + ": " + pair["text"] + "\n";
+                                        debugResponse = pair["bot_id"].ToString() + ": " + FixMessageMarkup(pair["text"].ToString()) + "\n";
                                         Responses.Add(debugResponse);
                                     }
                                     catch (NullReferenceException)
@@ -205,27 +211,7 @@ namespace Slackord
                                 var slackUserName = pair["user_profile"]["display_name"]?.ToString();
                                 var slackRealName = pair["user_profile"]["real_name"];
 
-                                string slackMessage;
-                                if (pair["text"].Contains('|'))
-                                {
-                                    string preSplit = pair["text"].ToString();
-                                    string[] split = preSplit.Split(new char[] { '|' });
-                                    string originalText = split[0];
-                                    string splitText = split[1];
-
-                                    if (originalText.Contains(splitText))
-                                    {
-                                        slackMessage = splitText + "\n";
-                                    }
-                                    else
-                                    {
-                                        slackMessage = originalText + "\n";
-                                    }
-                                }
-                                else
-                                {
-                                    slackMessage = pair["text"].ToString();
-                                }
+                                string slackMessage = FixMessageMarkup(pair["text"].ToString());
                                 if (string.IsNullOrEmpty(slackUserName))
                                 {
                                     debugResponse = newDateTime + " - " + slackRealName + ": " + slackMessage;
