@@ -224,6 +224,18 @@ namespace Slackord
                                     {
                                         Console.WriteLine("The following parse is over 2000 characters. Discord does not allow messages over 2000 characters. This message " +
                                             "will be split into multiple posts. The message that will be split is:\n" + debugResponse);
+
+                                        int lastIndex = slackMessage.Length > 3800 ? 3800 : slackMessage.Length;
+                                        string part1 = newDateTime + " - " + slackUserName + ": (1/2) " + slackMessage.Substring(0, 1900);
+                                        string part2 = newDateTime + " - " + slackUserName + ": (2/2) " + slackMessage.Substring(1900, lastIndex - 1900);
+                                        Responses.Add(part1);
+                                        Responses.Add(part2);
+                                        debugResponse = "Message was split";
+
+                                        if (slackMessage.Length > 3800)
+                                        {
+                                            Console.WriteLine("Message too long to split in two parts. Content will be lost.");
+                                        }
                                     }
                                     else
                                     {
