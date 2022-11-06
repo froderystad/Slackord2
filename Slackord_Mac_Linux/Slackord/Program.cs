@@ -283,6 +283,9 @@ namespace Slackord
                                 Console.WriteLine(slackMessage.Render(locale) + "\n");
                             }
                         }
+
+                        Responses.Sort((a, b) => DateTime.Compare(a.Timestamp, b.Timestamp));
+
                         Console.WriteLine("\n");
                         Console.WriteLine("-----------------------------------------" + "\n");
                         Console.WriteLine("Parsing of " + file + " completed successfully!" + "\n");
