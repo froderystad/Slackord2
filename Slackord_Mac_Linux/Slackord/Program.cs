@@ -4,6 +4,7 @@ using Discord.WebSocket;
 using Newtonsoft.Json.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Discord.Net;
+using System.CommandLine;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Octokit;
@@ -20,16 +21,51 @@ namespace Slackord
         private JArray parsed;
         private readonly List<string> Responses = new();
         private readonly List<string> ListOfFilesToParse = new();
-        private CultureInfo locale = new CultureInfo("nb-NO");
+        private readonly CultureInfo locale;
+        private readonly string filesFolder;
+        private readonly bool dryRun;
 
-        static void Main()
+        static async Task<int> Main(string[] args)
         {
-            new Slackord().Start();
+            var localeOption = new Option<string>(
+                name: "--locale",
+                getDefaultValue: () => "en-US",
+                description: "The locale used to format date and time"
+            );
+
+            var filesOption = new Option<string>(
+                name: "--files-folder",
+                getDefaultValue: () => "Files",
+                description: "The folder to look for Slack export files"
+            );
+
+            var dryRunOption = new Option<bool>(
+                name: "--dry-run",
+                getDefaultValue: () => false,
+                description: "Don't upload files to Discord"
+            );
+
+            var rootCommand = new RootCommand("Slackord2");
+            rootCommand.AddOption(localeOption);
+            rootCommand.AddOption(filesOption);
+            rootCommand.AddOption(dryRunOption);
+
+            rootCommand.SetHandler((localeArg, filesFolderArg, dryRunArg) => 
+                {
+                    new Slackord(localeArg, filesFolderArg, dryRunArg).Start();
+                },
+                localeOption, filesOption, dryRunOption);
+
+            return await rootCommand.InvokeAsync(args);
         }
 
-        public Slackord()
+        public Slackord(string locale, string filesFolder, bool dryRun)
         {
             _isFileParsed = false;
+
+            this.locale = new CultureInfo(locale);
+            this.filesFolder = filesFolder;
+            this.dryRun = dryRun;
         }
 
         public async void Start()
@@ -39,11 +75,11 @@ namespace Slackord
             CheckForFilesFolder();
         }
 
-        private static Task CheckForFilesFolder()
+        private Task CheckForFilesFolder()
         {
-            if (!Directory.Exists("Files"))
+            if (!Directory.Exists(filesFolder))
             {
-                Directory.CreateDirectory("Files");
+                Directory.CreateDirectory(filesFolder);
             }
             return Task.CompletedTask;
         }
@@ -126,7 +162,7 @@ namespace Slackord
             Console.WriteLine("Reading JSON files directory...");
             try
             {
-                var files = Directory.GetFiles("Files");
+                var files = Directory.GetFiles(filesFolder);
                 if (files.Length == 0)
                 {
                     Console.WriteLine("You haven't placed any JSON files in the Files folder.\n" +
@@ -269,8 +305,12 @@ namespace Slackord
             {
                 Console.WriteLine("Error encountered in input " + e.Message);
             }
-            Console.WriteLine("Bot will now attempt to connect to the Discord server...");
-            await MainAsync();
+
+            if (!dryRun)
+            {
+                Console.WriteLine("Bot will now attempt to connect to the Discord server...");
+                await MainAsync();
+            }
         }
 
         public async Task MainAsync()
