@@ -19,11 +19,13 @@ namespace Slackord
         private bool _isFileParsed;
         private IServiceProvider _services;
         private JArray parsed;
-        private readonly List<string> Responses = new();
-        private readonly List<string> ListOfFilesToParse = new();
+        private readonly List<SlackMessage> Responses = new();
+        private readonly List<FileInfo> ListOfFilesToParse = new();
         private readonly CultureInfo locale;
-        private readonly string filesFolder;
+        private DirectoryInfo filesFolder;
+        private FileInfo usersFile;
         private readonly bool dryRun;
+        private UserService userService;
 
         static async Task<int> Main(string[] args)
         {
@@ -33,10 +35,15 @@ namespace Slackord
                 description: "The locale used to format date and time"
             );
 
-            var filesOption = new Option<string>(
+            var filesOption = new Option<DirectoryInfo>(
                 name: "--files-folder",
-                getDefaultValue: () => "Files",
-                description: "The folder to look for Slack export files"
+                getDefaultValue: () => new DirectoryInfo("Files"),
+                description: "The folder to look for Slack export files ('~' for home doesn't work)"
+            );
+
+            var usersFileOption = new Option<FileInfo>(
+                name: "--users-file",
+                description: "Users file from Slack export (tries to resolve users from message export by default)"
             );
 
             var dryRunOption = new Option<bool>(
@@ -48,24 +55,39 @@ namespace Slackord
             var rootCommand = new RootCommand("Slackord2");
             rootCommand.AddOption(localeOption);
             rootCommand.AddOption(filesOption);
+            rootCommand.AddOption(usersFileOption);
             rootCommand.AddOption(dryRunOption);
 
-            rootCommand.SetHandler((localeArg, filesFolderArg, dryRunArg) => 
+            rootCommand.SetHandler((localeArg, filesFolderArg, usersFileArg, dryRunArg) => 
                 {
-                    new Slackord(localeArg, filesFolderArg, dryRunArg).Start();
+                    new Slackord(localeArg, filesFolderArg, usersFileArg, dryRunArg).Start();
                 },
-                localeOption, filesOption, dryRunOption);
+                localeOption, filesOption, usersFileOption, dryRunOption);
 
             return await rootCommand.InvokeAsync(args);
         }
 
-        public Slackord(string locale, string filesFolder, bool dryRun)
+        public Slackord(string locale, DirectoryInfo filesFolder, FileInfo usersFile, bool dryRun)
         {
             _isFileParsed = false;
 
             this.locale = new CultureInfo(locale);
             this.filesFolder = filesFolder;
+            this.usersFile = usersFile;
             this.dryRun = dryRun;
+
+            if (filesFolder != null && !filesFolder.Attributes.HasFlag(FileAttributes.Directory))
+            {
+                Console.WriteLine(filesFolder + " is a file, but must be a directory or not exist. Exiting!");
+                System.Environment.Exit(1);
+            }
+
+            if (usersFile != null && !usersFile.Exists)
+            {
+                Console.WriteLine(usersFile + " does not exist. Exiting!");
+                System.Environment.Exit(1);
+            }
+            userService = UserService.fromFile(usersFile);
         }
 
         public async void Start()
@@ -77,9 +99,9 @@ namespace Slackord
 
         private Task CheckForFilesFolder()
         {
-            if (!Directory.Exists(filesFolder))
+            if (!filesFolder.Exists)
             {
-                Directory.CreateDirectory(filesFolder);
+                filesFolder.Create();
             }
             return Task.CompletedTask;
         }
@@ -155,14 +177,14 @@ namespace Slackord
             slackMessage = Regex.Replace(slackMessage, @"\<(.*)\|(.*)\>", "$2 ($1)"); // <url|text> -> text (url)
             return slackMessage.Replace("&gt;", ">"); // quote
         }
-        
+
         [STAThread]
         private async Task ParseJsonFiles()
         {
             Console.WriteLine("Reading JSON files directory...");
             try
             {
-                var files = Directory.GetFiles(filesFolder);
+                var files = filesFolder.GetFiles();
                 if (files.Length == 0)
                 {
                     Console.WriteLine("You haven't placed any JSON files in the Files folder.\n" +
@@ -186,7 +208,7 @@ namespace Slackord
                 {
                     try
                     {
-                        var json = File.ReadAllText(file);
+                        var json = File.ReadAllText(file.FullName);
                         parsed = JArray.Parse(json);
                         Console.WriteLine("Begin parsing JSON data..." + "\n");
                         Console.WriteLine("-----------------------------------------" + "\n");
@@ -195,91 +217,70 @@ namespace Slackord
                         {
                             if (pair.ContainsKey("files"))
                             {
-                                try
-                                {
-                                    debugResponse = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["thumb_1024"].ToString() + "\n";
-                                    Responses.Add(debugResponse);
-                                    Console.WriteLine(debugResponse + "\n");
-                                }
-                                catch (NullReferenceException)
-                                {
-                                    try
-                                    {
-                                        debugResponse = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["url_private"].ToString() + "\n";
-                                        Responses.Add(debugResponse);
-                                        Console.WriteLine(debugResponse + "\n");
-                                    }
-                                    catch (NullReferenceException)
-                                    {
-                                        debugResponse = "Skipped a tombstoned file attachement." + "\n";
-                                        Responses.Add(debugResponse);
-                                        Console.WriteLine(debugResponse);
-                                    }
-                                }
-                            }
-                            if (pair.ContainsKey("bot_profile"))
-                            {
-                                try
-                                {
-                                    debugResponse = pair["bot_profile"]["name"].ToString() + ": " + FixMessageMarkup(pair["text"].ToString()) + "\n";
-                                    Responses.Add(debugResponse);
-                                }
-                                catch (NullReferenceException)
-                                {
-                                    try
-                                    {
-                                        debugResponse = pair["bot_id"].ToString() + ": " + FixMessageMarkup(pair["text"].ToString()) + "\n";
-                                        Responses.Add(debugResponse);
-                                    }
-                                    catch (NullReferenceException)
-                                    {
-                                        debugResponse = "A bot message was ignored. Please submit an issue on Github for this.";
-                                    }
-                                }
-                                Console.WriteLine(debugResponse + "\n");
-                            }
-                            if (pair.ContainsKey("user_profile") && pair.ContainsKey("text"))
-                            {
-                                var rawTimeDate = pair["ts"];
-                                var oldDateTime = (double)rawTimeDate;
-                                var convertDateTime = ConvertFromUnixTimestampToHumanReadableTime(oldDateTime).ToString(locale);
-                                var newDateTime = convertDateTime.ToString();
-                                var slackUserName = pair["user_profile"]["display_name"]?.ToString();
-                                var slackRealName = pair["user_profile"]["real_name"];
+                                string messageText = null;
 
-                                string slackMessage = FixMessageMarkup(pair["text"].ToString());
-                                if (string.IsNullOrEmpty(slackUserName))
+                                if (pair["files"][0]["thumb_1024"] != null)
                                 {
-                                    debugResponse = newDateTime + " - " + slackRealName + ": " + slackMessage;
-                                    Responses.Add(debugResponse);
+                                    messageText = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["thumb_1024"].ToString() + "\n";
+                                } else if (pair["files"][0]["url_private"] != null) {
+                                    messageText = FixMessageMarkup(pair["text"].ToString()) + "\n" + pair["files"][0]["url_private"].ToString() + "\n";
+                                } else {
+                                    messageText = "Skipped a tombstoned file attachement." + "\n";
+                                }
+                                var slackMessage = new SlackMessage(
+                                    (pair["id"]?.ToString()),
+                                    ConvertFromUnixTimestampToHumanReadableTime((double) pair["ts"]),
+                                    userService.userById(pair["user"].ToString()),
+                                    messageText
+                                );
+                                Responses.Add(slackMessage);
+                                Console.WriteLine(slackMessage.Render(locale) + "\n");
+                            }
+                            else if (pair.ContainsKey("bot_profile"))
+                            {
+                                string botId = null;
+                                if (pair["bot_profile"]["name"] != null)
+                                {
+                                    botId = pair["bot_profile"]["name"].ToString(); 
+                                }
+                                else if (pair["bot_id"] != null)
+                                {
+                                    botId = pair["bot_profile"]["name"].ToString();
+                                }
+
+                                if (botId != null)
+                                {
+                                    var slackMessage = new SlackMessage(
+                                    (pair["id"].ToString()),
+                                    ConvertFromUnixTimestampToHumanReadableTime((long) pair["ts"]),
+                                    new User(botId),
+                                    FixMessageMarkup(pair["text"].ToString())
+                                    );
+                                    Responses.Add(slackMessage);
+                                    Console.WriteLine(slackMessage.Render(locale) + "\n");
                                 }
                                 else
                                 {
-                                    debugResponse = newDateTime + " - " + slackUserName + ": " + slackMessage;
-                                    if (debugResponse.Length >= 2000)
-                                    {
-                                        Console.WriteLine("The following parse is over 2000 characters. Discord does not allow messages over 2000 characters. This message " +
-                                            "will be split into multiple posts. The message that will be split is:\n" + debugResponse);
-
-                                        int lastIndex = slackMessage.Length > 3800 ? 3800 : slackMessage.Length;
-                                        string part1 = newDateTime + " - " + slackUserName + ": (1/2) " + slackMessage.Substring(0, 1900);
-                                        string part2 = newDateTime + " - " + slackUserName + ": (2/2) " + slackMessage.Substring(1900, lastIndex - 1900);
-                                        Responses.Add(part1);
-                                        Responses.Add(part2);
-                                        debugResponse = "Message was split";
-
-                                        if (slackMessage.Length > 3800)
-                                        {
-                                            Console.WriteLine("Message too long to split in two parts. Content will be lost.");
-                                        }
-                                    }
-                                    else
-                                    {
-                                        debugResponse = newDateTime + " - " + slackUserName + ": " + slackMessage + " " + "\n";
-                                        Responses.Add(debugResponse);
-                                    }
+                                    Console.WriteLine("A bot message was ignored. Please submit an issue on Github for this.\n");
                                 }
-                                Console.WriteLine(debugResponse + "\n");
+                            }
+                            else if (pair.ContainsKey("user_profile") && pair.ContainsKey("text"))
+                            {
+                                var user = new User(
+                                    pair["user_profile"]["id"]?.ToString(),
+                                    pair["user_profile"]["real_name"].ToString(),
+                                    pair["user_profile"]["display_name"]?.ToString()
+                                );
+
+                                var slackMessage = new SlackMessage(
+                                    pair["id"]?.ToString(),
+                                    ConvertFromUnixTimestampToHumanReadableTime((double) pair["ts"]),
+                                    user,
+                                    FixMessageMarkup(pair["text"].ToString())
+                                );
+
+                                Responses.Add(slackMessage);
+                                Console.WriteLine(slackMessage.Render(locale) + "\n");
                             }
                         }
                         Console.WriteLine("\n");
@@ -295,9 +296,9 @@ namespace Slackord
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
-                        Console.WriteLine("An error occured while parsing the JSON file. Please try again.");
-                        ParseJsonFiles();
+                        Console.WriteLine(ex);
+                        Console.WriteLine("An error occured while parsing the JSON file " + file + ". Please try again.");
+                        System.Environment.Exit(1);
                     }
                 }
             }
@@ -391,46 +392,11 @@ namespace Slackord
                 Console.WriteLine("\n");
                 Console.WriteLine("Beginning transfer of Slack messages to Discord..." + "\n" +
                 "-----------------------------------------" + "\n");
-                foreach (string message in Responses)
+                foreach (SlackMessage message in Responses)
                 {
-                    string messageToSend = message;
-                    bool wasSplit = false;
-
-                    if (messageToSend.Contains('|'))
+                    foreach (string part in message.Parts(locale))
                     {
-                        string preSplit = message;
-                        string[] split = preSplit.Split(new char[] { '|' });
-                        string originalText = split[0];
-                        string splitText = split[1];
-
-                        if (originalText.Contains(splitText))
-                        {
-                            messageToSend = splitText + "\n";
-                        }
-                        else
-                        {
-                            messageToSend = originalText + "\n";
-                        }
-                    }
-                    if (message.Length >= 2000)
-                    {
-                        var responses = messageToSend.SplitInParts(1800);
-
-                        Console.WriteLine("SPLITTING AND POSTING: " + messageToSend);
-                        foreach (var response in responses)
-                        {
-                            messageToSend = response + " " + "\n";
-                            await _discordClient.GetGuild(guildID).GetTextChannel(channel.Id).SendMessageAsync(messageToSend).ConfigureAwait(false);
-                        }
-                        wasSplit = true;
-                    }
-                    else
-                    {
-                        Console.WriteLine("POSTING: " + message);
-                    }
-                    if (!wasSplit)
-                    {
-                        await _discordClient.GetGuild(guildID).GetTextChannel(channel.Id).SendMessageAsync(messageToSend).ConfigureAwait(false);
+                        await _discordClient.GetGuild(guildID).GetTextChannel(channel.Id).SendMessageAsync(part).ConfigureAwait(false);
                     }
                 }
                 Console.WriteLine("-----------------------------------------" + "\n" +
@@ -459,6 +425,49 @@ namespace Slackord
 
             for (var i = 0; i < s.Length; i += partLength)
                 yield return s.Substring(i, Math.Min(partLength, s.Length - i));
+        }
+    }
+
+    class SlackMessage
+    {
+        public SlackMessage(string id, DateTime timestamp, User user, string message){
+            this.Id = id;
+            this.Timestamp = timestamp;
+            this.User = user;
+            this.Message = message;
+        }
+        public string Id { init; get; }
+        public DateTime Timestamp { init; get; }
+        public User User { init; get; }
+        public string Message { init; get; }
+
+        public string Render(CultureInfo locale)
+        {
+            return Timestamp.ToString(locale) + " - " + User.Render() + ": " + Message; 
+        }
+
+        public List<string> Parts(CultureInfo locale)
+        {
+            var unsplitMessage = Render(locale);
+            if (unsplitMessage.Length < 2000)
+            {
+                return new List<string> { unsplitMessage };
+            }
+            else
+            {
+                Console.WriteLine("The following parse is over 2000 characters. Discord does not allow messages over 2000 characters. This message " +
+                                  "will be split into multiple posts. The message that will be split is:\n" + unsplitMessage);
+
+                int lastIndex = Message.Length > 3800 ? 3800 : Message.Length;
+                string part1 = Timestamp.ToString(locale) + " - " + User.Render() + ": (1/2) " + Message.Substring(0, 1900);
+                string part2 = Timestamp.ToString(locale) + " - " + User.Render() + ": (2/2) " + Message.Substring(1900, lastIndex - 1900);
+                
+                if (Message.Length > 3800)
+                {
+                    Console.WriteLine("Message too long to split in two parts. Content will be lost.");
+                }
+                return new List<string> { part1, part2 };
+            }
         }
     }
 }
