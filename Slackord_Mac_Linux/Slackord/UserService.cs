@@ -19,6 +19,11 @@ namespace Slackord
 
         private static Dictionary<string, User> readUsers(FileInfo usersFile) {
             Dictionary<string, User> users = new();
+            if (usersFile == null)
+            {
+                return users;
+            }
+
             var json = File.ReadAllText(usersFile.FullName);
             var jarray = JArray.Parse(json);
 
@@ -64,11 +69,11 @@ namespace Slackord
 
         public string Render()
         {
-            if (DisplayName != null)
+            if (!String.IsNullOrEmpty(DisplayName))
             {
                 return DisplayName;
             }
-            else if (RealName != null)
+            else if (!String.IsNullOrEmpty(RealName))
             {
                 return RealName;
             }

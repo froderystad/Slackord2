@@ -174,8 +174,19 @@ namespace Slackord
 
         private string FixMessageMarkup(string slackMessage)
         {
-            slackMessage = Regex.Replace(slackMessage, @"\<(.*)\|(.*)\>", "$2 ($1)"); // <url|text> -> text (url)
+            slackMessage = Regex.Replace(slackMessage, @"\<(.*?)\|(.*?)\>", "$2 ($1)"); // <url|text> -> text (url)
             return slackMessage.Replace("&gt;", ">"); // quote
+        }
+
+        private double JTokenToDouble(JToken jToken)
+        {
+            if (jToken == null) {
+                return 0;
+            }
+            else
+            {
+                return (double) jToken;
+            }
         }
 
         [STAThread]
@@ -228,9 +239,10 @@ namespace Slackord
                                     messageText = "Skipped a tombstoned file attachement." + "\n";
                                 }
                                 var slackMessage = new SlackMessage(
-                                    (pair["id"]?.ToString()),
+                                    JTokenToDouble(pair["ts"]),
+                                    JTokenToDouble(pair["thread_ts"]),
                                     ConvertFromUnixTimestampToHumanReadableTime((double) pair["ts"]),
-                                    userService.userById(pair["user"].ToString()),
+                                    userService.userById(pair["user"]?.ToString()),
                                     messageText
                                 );
                                 Responses.Add(slackMessage);
@@ -251,7 +263,8 @@ namespace Slackord
                                 if (botId != null)
                                 {
                                     var slackMessage = new SlackMessage(
-                                    (pair["id"].ToString()),
+                                    JTokenToDouble(pair["ts"]),
+                                    JTokenToDouble(pair["thread_ts"]),
                                     ConvertFromUnixTimestampToHumanReadableTime((long) pair["ts"]),
                                     new User(botId),
                                     FixMessageMarkup(pair["text"].ToString())
@@ -266,16 +279,18 @@ namespace Slackord
                             }
                             else if (pair.ContainsKey("user_profile") && pair.ContainsKey("text"))
                             {
-                                var user = new User(
-                                    pair["user_profile"]["id"]?.ToString(),
+                                var userFromMessage = new User(
+                                    pair["user"].ToString(),
                                     pair["user_profile"]["real_name"].ToString(),
                                     pair["user_profile"]["display_name"]?.ToString()
                                 );
+                                var userFromUsersFile = userService.userById(userFromMessage.Id);
 
                                 var slackMessage = new SlackMessage(
-                                    pair["id"]?.ToString(),
+                                    JTokenToDouble(pair["ts"]),
+                                    JTokenToDouble(pair["thread_ts"]),
                                     ConvertFromUnixTimestampToHumanReadableTime((double) pair["ts"]),
-                                    user,
+                                    userFromUsersFile != null ? userFromUsersFile : userFromMessage,
                                     FixMessageMarkup(pair["text"].ToString())
                                 );
 
@@ -283,8 +298,6 @@ namespace Slackord
                                 Console.WriteLine(slackMessage.Render(locale) + "\n");
                             }
                         }
-
-                        Responses.Sort((a, b) => DateTime.Compare(a.Timestamp, b.Timestamp));
 
                         Console.WriteLine("\n");
                         Console.WriteLine("-----------------------------------------" + "\n");
@@ -304,6 +317,27 @@ namespace Slackord
                         System.Environment.Exit(1);
                     }
                 }
+
+                Dictionary<double, DateTime> threadRootTsToTimestampMap = new();
+                Responses.ForEach(slackMessage => {
+                    if (slackMessage.Ts != 0 && slackMessage.Ts == slackMessage.ThreadTs)
+                    {
+                        threadRootTsToTimestampMap.Add(slackMessage.Ts, slackMessage.Timestamp);
+                    }
+                });
+
+                Responses.Sort((a, b) => {
+                    if (a.ThreadTs != 0 && a.ThreadTs == b.ThreadTs) // within same thread
+                    {
+                        return DateTime.Compare(a.Timestamp, b.Timestamp);
+                    }
+                    else // thread order
+                    {
+                        var aTs = threadRootTsToTimestampMap.GetValueOrDefault(a.ThreadTs, a.Timestamp);
+                        var bTs = threadRootTsToTimestampMap.GetValueOrDefault(b.ThreadTs, b.Timestamp);
+                        return DateTime.Compare(aTs, bTs);
+                    }
+                });
             }
             catch (Exception e)
             {
@@ -433,20 +467,29 @@ namespace Slackord
 
     class SlackMessage
     {
-        public SlackMessage(string id, DateTime timestamp, User user, string message){
-            this.Id = id;
+        public SlackMessage(double ts, double threadTs, DateTime timestamp, User user, string message){
+            this.Ts = ts;
+            this.ThreadTs = threadTs;
             this.Timestamp = timestamp;
             this.User = user;
             this.Message = message;
         }
-        public string Id { init; get; }
+        public double Ts { init; get; }
+        public double ThreadTs { init; get; }
         public DateTime Timestamp { init; get; }
         public User User { init; get; }
         public string Message { init; get; }
 
         public string Render(CultureInfo locale)
         {
-            return Timestamp.ToString(locale) + " - " + User.Render() + ": " + Message; 
+            if (User == null)
+            {
+                return Timestamp.ToString(locale) + ": " + Message;
+            }
+            else
+            {
+                return Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": " + Message;
+            }
         }
 
         public List<string> Parts(CultureInfo locale)
@@ -462,8 +505,8 @@ namespace Slackord
                                   "will be split into multiple posts. The message that will be split is:\n" + unsplitMessage);
 
                 int lastIndex = Message.Length > 3800 ? 3800 : Message.Length;
-                string part1 = Timestamp.ToString(locale) + " - " + User.Render() + ": (1/2) " + Message.Substring(0, 1900);
-                string part2 = Timestamp.ToString(locale) + " - " + User.Render() + ": (2/2) " + Message.Substring(1900, lastIndex - 1900);
+                string part1 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (1/2) " + Message.Substring(0, 1900);
+                string part2 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (2/2) " + Message.Substring(1900, lastIndex - 1900);
                 
                 if (Message.Length > 3800)
                 {
@@ -471,6 +514,17 @@ namespace Slackord
                 }
                 return new List<string> { part1, part2 };
             }
+        }
+
+        private string ReplyPart(CultureInfo locale)
+        {
+            var repliedWord = locale.Name == "nb-NO" ? "svarte" : "replied";
+            return IsThread() ? " " + repliedWord : "";
+        }
+
+        public bool IsThread()
+        {
+            return ThreadTs != 0 && Ts != ThreadTs;
         }
     }
 }
