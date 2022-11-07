@@ -175,7 +175,27 @@ namespace Slackord
         private string FixMessageMarkup(string slackMessage)
         {
             slackMessage = Regex.Replace(slackMessage, @"\<(.*?)\|(.*?)\>", "$2 ($1)"); // <url|text> -> text (url)
-            return slackMessage.Replace("&gt;", ">"); // quote
+            slackMessage = slackMessage.Replace("&gt;", ">"); // quote
+            return ReplaceUsernameReferences(slackMessage);
+        }
+
+        private string ReplaceUsernameReferences(string slackMessage)
+        {
+            if (userService == null)
+            {
+                return slackMessage;
+            }
+
+            Regex r = new Regex(@"\<\@(.*?)\>");
+            Match m = r.Match(slackMessage);
+            while (m.Success)
+            {
+                var username = m.Groups[1].Captures[0].ToString();
+                var user = userService.userById(username);
+                slackMessage = slackMessage.Replace("<@" + username + ">", user != null ? user.Render() : username);
+                m = m.NextMatch();
+            }
+            return slackMessage;        
         }
 
         private double JTokenToDouble(JToken jToken)
@@ -484,11 +504,11 @@ namespace Slackord
         {
             if (User == null)
             {
-                return Timestamp.ToString(locale) + ": " + Message;
+                return Timestamp.ToString(locale) + ":\n" + Message;
             }
             else
             {
-                return Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": " + Message;
+                return Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ":\n" + Message;
             }
         }
 
@@ -505,8 +525,8 @@ namespace Slackord
                                   "will be split into multiple posts. The message that will be split is:\n" + unsplitMessage);
 
                 int lastIndex = Message.Length > 3800 ? 3800 : Message.Length;
-                string part1 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (1/2) " + Message.Substring(0, 1900);
-                string part2 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (2/2) " + Message.Substring(1900, lastIndex - 1900);
+                string part1 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (1/2)\n" + Message.Substring(0, 1900);
+                string part2 = Timestamp.ToString(locale) + " - " + User.Render() + ReplyPart(locale) + ": (2/2)\n" + Message.Substring(1900, lastIndex - 1900);
                 
                 if (Message.Length > 3800)
                 {
